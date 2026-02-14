@@ -4,6 +4,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { UPLOAD_DIR, MAX_FILE_SIZE } from '../config/storage';
 import { createAsset } from '../services/asset-service';
+import prisma from '../config/database';
 
 const router = Router();
 
@@ -55,8 +56,6 @@ router.post('/', upload.single('file'), async (req, res) => {
 // Get assets for project
 router.get('/project/:projectId', async (req, res) => {
   try {
-    const prisma = (await import('../config/database')).default;
-    
     const assets = await prisma.asset.findMany({
       where: { projectId: req.params.projectId },
       orderBy: { createdAt: 'desc' },

@@ -8,8 +8,12 @@ router.post('/', async (req, res) => {
   try {
     const { name } = req.body;
     
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Project name is required' });
+    }
+
     const project = await prisma.project.create({
-      data: { name },
+      data: { name: name.trim() },
     });
 
     res.json(project);

@@ -22,6 +22,24 @@ router.post('/', async (req, res) => {
       opacityKeyframes,
     } = req.body;
 
+    if (!projectId || !type || !track) {
+      return res.status(400).json({ error: 'Missing required fields: projectId, type, track' });
+    }
+
+    if (startTime === undefined || endTime === undefined || endTime <= startTime) {
+      return res.status(400).json({ error: 'Invalid time range' });
+    }
+
+    const validTypes = ['text', 'image'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ error: `Invalid type. Must be one of: ${validTypes.join(', ')}` });
+    }
+
+    const validTracks = ['overlay_1', 'overlay_2'];
+    if (!validTracks.includes(track)) {
+      return res.status(400).json({ error: `Invalid track. Must be one of: ${validTracks.join(', ')}` });
+    }
+
     const overlay = await prisma.overlay.create({
       data: {
         projectId,

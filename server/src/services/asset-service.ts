@@ -13,6 +13,17 @@ interface VideoMetadata {
   hasAudio: boolean;
 }
 
+function parseFps(fpsString: string | undefined): number {
+  if (!fpsString) return 30;
+  const parts = fpsString.split('/');
+  if (parts.length === 2) {
+    const num = parseFloat(parts[0]);
+    const den = parseFloat(parts[1]);
+    if (den > 0) return num / den;
+  }
+  return parseFloat(fpsString) || 30;
+}
+
 export async function extractVideoMetadata(filepath: string): Promise<VideoMetadata> {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filepath, (err, metadata) => {
@@ -27,7 +38,7 @@ export async function extractVideoMetadata(filepath: string): Promise<VideoMetad
 
       resolve({
         duration: metadata.format.duration || 0,
-        fps: eval(videoStream.r_frame_rate || '30') as number,
+        fps: parseFps(videoStream.r_frame_rate),
         width: videoStream.width || 0,
         height: videoStream.height || 0,
         codec: videoStream.codec_name || 'unknown',

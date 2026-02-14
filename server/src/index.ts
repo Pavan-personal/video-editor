@@ -6,6 +6,7 @@ import assetRoutes from './routes/assets';
 import clipRoutes from './routes/clips';
 import overlayRoutes from './routes/overlays';
 import exportRoutes from './routes/exports';
+import timelineRoutes from './routes/timeline';
 
 dotenv.config();
 
@@ -28,6 +29,7 @@ app.use('/api/assets', assetRoutes);
 app.use('/api/clips', clipRoutes);
 app.use('/api/overlays', overlayRoutes);
 app.use('/api/exports', exportRoutes);
+app.use('/api/timeline', timelineRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

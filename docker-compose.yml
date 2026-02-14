@@ -68,6 +68,17 @@ services:
         condition: service_healthy
     command: npx tsx src/workers/render-worker.ts
 
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server
+    environment:
+      - VITE_API_URL=http://server:3001
+
 volumes:
   postgres_data:
   redis_data:

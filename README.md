@@ -56,13 +56,18 @@ docker-compose up --build
 #   - Redis (port 6379)
 #   - Backend API (port 3001)
 #   - Worker process
+#   - Frontend UI (port 3000)
 ```
 
 ### Verify
 
 ```bash
+# Backend
 curl http://localhost:3001/health
 # {"status":"ok"}
+
+# Frontend
+open http://localhost:3000
 ```
 
 ### Run Tests
@@ -277,7 +282,120 @@ Additional tests via `test-backend.sh`:
 
 ## Frontend
 
-*Coming soon*
+### Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Framework | React 19 + TypeScript |
+| Build Tool | Vite 7 |
+| State Management | React Hooks + TanStack Query |
+| HTTP Client | Axios |
+| Canvas Rendering | HTML5 Canvas API |
+| Testing | Vitest + Testing Library |
+
+### Features
+
+#### Multi-Track Timeline
+- 5 tracks: video_a, video_b, overlay_1, overlay_2, audio
+- Canvas-based rendering with 50px per second scale
+- Visual representation of clips and overlays
+- Click to move playhead
+- Shift+click to delete clips
+
+#### Video Preview
+- Canvas-based preview at 1280x720
+- Real-time overlay rendering with transforms
+- Speed ramp evaluation for accurate playback
+- Interpolated keyframe animations
+
+#### Asset Management
+- Drag-drop file upload
+- Thumbnail previews
+- Metadata display (duration, resolution)
+- One-click add to timeline
+
+#### Clip Editing
+- Add clips to timeline from asset panel
+- Click clip to add speed keyframes
+- Speed range: 0x (hold) to 8x
+- Visual speed indicator (⚡) for ramped clips
+
+#### Text Overlays
+- Add text at current playhead position
+- Configurable font size, color, background
+- Keyframed transforms: position, scale, rotation, opacity
+- Real-time preview rendering
+
+#### Export
+- One-click export with progress polling
+- Status updates every second
+- Download link on completion
+- Error handling with messages
+
+### Project Structure
+
+```
+ui/
+├── src/
+│   ├── api/
+│   │   └── client.ts          # API client + types
+│   ├── components/
+│   │   ├── AssetPanel.tsx     # Asset upload + list
+│   │   ├── Preview.tsx        # Canvas video preview
+│   │   ├── Timeline.tsx       # Multi-track timeline
+│   │   └── __tests__/
+│   │       └── Timeline.test.tsx
+│   ├── App.tsx                # Main editor component
+│   ├── App.css                # Styles
+│   └── main.tsx               # Entry point
+├── Dockerfile
+├── vite.config.ts             # Vite config with proxy
+├── vitest.config.ts           # Test config
+└── package.json
+```
+
+### API Integration
+
+All API calls go through `src/api/client.ts`:
+- Projects: create, list, get, delete
+- Assets: upload (multipart), list
+- Clips: create, update, delete
+- Overlays: create, update, delete
+- Exports: create, poll status, download
+
+Vite dev server proxies `/api` requests to `http://localhost:3001`.
+
+### Tests
+
+```bash
+cd ui && npm test
+```
+
+3 tests covering:
+- Timeline canvas rendering
+- Current time display
+- Clip rendering on tracks
+
+### Limitations
+
+- Preview uses simplified rendering (no actual video playback)
+- Speed ramp evaluation is approximate (matches backend logic)
+- No drag-to-trim or drag-to-move clips
+- No keyframe editor UI (uses prompts)
+- No undo/redo
+- No zoom controls on timeline
+- Text overlays use first keyframe in preview (full animation in export)
+
+### Usage Guide
+
+1. **Create a Project**: Click "New Project" and enter a name
+2. **Upload Assets**: Use the file input in the left panel to upload video files
+3. **Add Clips**: Click "Add to Timeline" on any asset to place it on video_a track
+4. **Add Speed Keyframes**: Click on a clip in the timeline, enter a speed value (0-8)
+5. **Add Text Overlay**: Click "Add Text" button, enter text content
+6. **Scrub Timeline**: Click anywhere on the timeline to move the playhead
+7. **Export**: Click "Export" to render the final video
+8. **Download**: When export completes, use the download link
 
 ---
 

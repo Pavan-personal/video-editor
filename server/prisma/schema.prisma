@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  assets    Asset[]
+  clips     Clip[]
+  overlays  Overlay[]
+  exports   Export[]
+}
+
+model Asset {
+  id          String   @id @default(uuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  type        String   // 'video', 'audio', 'image'
+  filename    String
+  filepath    String
+  
+  // Video metadata
+  duration    Float?
+  fps         Float?
+  width       Int?
+  height      Int?
+  codec       String?
+  hasAudio    Boolean  @default(false)
+  
+  // Thumbnail
+  thumbnailPath String?
+  
+  createdAt   DateTime @default(now())
+  
+  clips       Clip[]
+  
+  @@index([projectId])
+}
+
+model Clip {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  assetId   String
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  
+  track     String   // 'video_a', 'video_b', 'audio'
+  
+  // Timeline position
+  startTime Float    // seconds on timeline
+  endTime   Float    // seconds on timeline
+  
+  // Source trimming
+  trimStart Float    @default(0) // seconds in source
+  trimEnd   Float?   // seconds in source (null = use full duration)
+  
+  // Speed keyframes (JSON array)
+  speedKeyframes Json @default("[]") // [{time: 0, speed: 1}, {time: 2, speed: 2}]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([projectId])
+  @@index([assetId])
+}
+
+model Overlay {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  type      String   // 'text', 'image'
+  track     String   // 'overlay_1', 'overlay_2'
+  
+  // Timeline position
+  startTime Float
+  endTime   Float
+  
+  // Content
+  content   String?  // text content or image path
+  
+  // Style (for text)
+  fontSize  Int?
+  color     String?
+  bgColor   String?
+  
+  // Transform keyframes (JSON array)
+  positionKeyframes Json @default("[]") // [{time: 0, x: 100, y: 100}]
+  scaleKeyframes    Json @default("[]") // [{time: 0, scale: 1}]
+  rotationKeyframes Json @default("[]") // [{time: 0, rotation: 0}]
+  opacityKeyframes  Json @default("[]") // [{time: 0, opacity: 1}]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([projectId])
+}
+
+model Export {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  status    String   // 'QUEUED', 'RUNNING', 'COMPLETE', 'FAILED'
+  progress  Float    @default(0)
+  
+  outputPath String?
+  errorMessage String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([projectId])
+  @@index([status])
+}

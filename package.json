@@ -1,0 +1,18 @@
+{
+  "name": "video-editor",
+  "version": "1.0.0",
+  "description": "Web-based video editor with timeline, speed ramping, and overlays",
+  "scripts": {
+    "dev": "docker-compose up",
+    "dev:build": "docker-compose up --build",
+    "down": "docker-compose down",
+    "clean": "docker-compose down -v",
+    "server:install": "cd server && npm install",
+    "ui:install": "cd ui && npm install",
+    "install:all": "npm run server:install && npm run ui:install",
+    "test": "cd server && npm test"
+  },
+  "keywords": ["video", "editor", "ffmpeg", "timeline"],
+  "author": "",
+  "license": "MIT"
+}

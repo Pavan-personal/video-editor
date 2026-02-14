@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+
+# Test output files (root level only)
+/sample.mp4
+/rendered-output.mp4
+
+# Uploads and exports
+server/uploads/
+server/exports/
+
+# OS
+.DS_Store
+
+# Logs
+*.log

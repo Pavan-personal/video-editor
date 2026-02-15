@@ -4,9 +4,9 @@ node_modules/
 # Build output
 dist/
 
-./.vscode
+.vscode/
 
-./cool
+cool/
 
 # Environment
 .env

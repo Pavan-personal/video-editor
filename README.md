@@ -526,6 +526,10 @@ PORT=3001
 
 ---
 
+**This feature is not implemented**: Track B (PiP) not visible in browser preview — the spec says "If both video tracks have content at the same time: Track B overlays Track A." This works in export but not in the live preview. The preview only shows Track A video.
+
+---
+
 ## AI Usage
 
 This project was built with AI assistance (Kiro / Claude). Here's how AI was used:

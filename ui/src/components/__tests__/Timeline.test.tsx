@@ -6,6 +6,7 @@ describe('Timeline Component', () => {
   const baseProps = {
     clips: [],
     overlays: [],
+    assets: [],
     currentTime: 0,
     onTimeChange: vi.fn(),
     onClipUpdate: vi.fn(),
@@ -41,7 +42,7 @@ describe('Timeline Component', () => {
     expect(screen.getByText('clip-a')).toBeTruthy();
   });
 
-  it('renders overlay blocks', () => {
+  it('renders overlay blocks with stripped animation suffix', () => {
     const overlays = [{
       id: 'ov-1',
       projectId: 'p1',
@@ -49,13 +50,14 @@ describe('Timeline Component', () => {
       track: 'overlay_1',
       startTime: 0,
       endTime: 5,
-      content: 'Hello World',
+      content: 'Hello World|||fade',
       positionKeyframes: [],
       scaleKeyframes: [],
       rotationKeyframes: [],
       opacityKeyframes: [],
     }];
     render(<Timeline {...baseProps} overlays={overlays} />);
+    // Should show "Hello World" not "Hello World|||fade"
     expect(screen.getByText('Hello World')).toBeTruthy();
   });
 });

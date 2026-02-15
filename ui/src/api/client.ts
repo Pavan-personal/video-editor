@@ -44,6 +44,7 @@ export interface Clip {
   trimStart: number;
   trimEnd?: number;
   speedKeyframes: SpeedKeyframe[];
+  asset?: Asset; // included from API joins
 }
 
 export interface TransformKeyframe {
@@ -106,13 +107,17 @@ export const projectsApi = {
 };
 
 export const assetsApi = {
-  upload: (projectId: string, file: File, onProgress?: (pct: number) => void) => {
+  upload: (projectId: string, file: File, onProgress?: (pct: number) => void, extractAudio?: boolean) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('projectId', projectId);
     let type = 'video';
     if (file.type.startsWith('audio/')) type = 'audio';
     else if (file.type.startsWith('image/')) type = 'image';
+    if (extractAudio) {
+      type = 'audio';
+      formData.append('extractAudio', 'true');
+    }
     formData.append('type', type);
     return api.post<Asset>('/assets', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

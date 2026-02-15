@@ -1,6 +1,5 @@
 import { Queue } from 'bullmq';
 
-// BullMQ connection config (not an instance)
 const connectionConfig = {
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379'),

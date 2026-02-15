@@ -1,9 +1,10 @@
 FROM node:20-slim
 
-# Install FFmpeg and OpenSSL
+# Install FFmpeg, OpenSSL, and curl (for healthcheck)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     openssl \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

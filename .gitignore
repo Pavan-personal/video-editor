@@ -6,6 +6,8 @@ dist/
 
 ./.vscode
 
+./cool
+
 # Environment
 .env
 

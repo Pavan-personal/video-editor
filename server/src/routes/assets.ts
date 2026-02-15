@@ -39,13 +39,13 @@ router.post('/', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const { projectId, type } = req.body;
+    const { projectId, type, extractAudio } = req.body;
 
     if (!projectId || !type) {
       return res.status(400).json({ error: 'Missing projectId or type' });
     }
 
-    const asset = await createAsset(projectId, req.file, type);
+    const asset = await createAsset(projectId, req.file, type, extractAudio === 'true');
 
     res.json(asset);
   } catch (error: any) {

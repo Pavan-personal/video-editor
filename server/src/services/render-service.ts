@@ -23,6 +23,12 @@ function sanitizeText(text: string): string {
   return text.replace(/[':;\\]/g, '').replace(/\n/g, ' ');
 }
 
+// Convert CSS hex color (#rrggbb) to FFmpeg color format (0xRRGGBB)
+function cssToFfmpegColor(cssColor: string): string {
+  if (cssColor.startsWith('#')) return '0x' + cssColor.slice(1);
+  return cssColor;
+}
+
 export async function renderProject(exportId: string, projectId: string): Promise<string> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -58,6 +64,23 @@ export async function renderProject(exportId: string, projectId: string): Promis
     }
 
     if (!baseVideo) throw new Error('No video clips on Track A');
+
+    // Compute the maximum end time across all clips and overlays
+    const allEnds = [
+      ...clips.map((c: any) => c.endTime),
+      ...overlays.map((o: any) => o.endTime),
+    ];
+    const projectDuration = Math.max(...allEnds);
+
+    // Get base video duration
+    const baseDuration = await getVideoDuration(baseVideo);
+
+    // If overlays extend beyond the video, pad the video with black frames
+    if (projectDuration > baseDuration + 0.1) {
+      const padded = await padVideoToLength(baseVideo, projectDuration, tempFiles);
+      tempFiles.push(padded);
+      baseVideo = padded;
+    }
 
     // Step 2: Composite Track B on top of Track A
     await updateExportProgress(exportId, 30);
@@ -319,31 +342,98 @@ async function compositeTrackB(
 }
 
 // ============================================
-// Text Overlays (Animated with Keyframes)
+// Text Overlays (Animated with Keyframes + Animation Presets)
 // ============================================
+
+/**
+ * Compute animation effects for a text overlay at a given local time.
+ * Returns adjustments to x, y, alpha, and fontSize that replicate the CSS animations.
+ */
+function computeTextAnimation(
+  animation: string, localTime: number, duration: number,
+  baseX: number, baseY: number, baseAlpha: number, baseFontSize: number
+): { x: number; y: number; alpha: number; fontSize: number } {
+  const entranceDur = Math.min(0.5, duration);
+  const progress = Math.min(1, localTime / entranceDur);
+  const exitStart = duration - 0.5;
+  const exitProgress = localTime > exitStart ? Math.min(1, (localTime - exitStart) / 0.5) : 0;
+
+  let x = baseX, y = baseY, alpha = baseAlpha, fontSize = baseFontSize;
+
+  switch (animation) {
+    case 'fade':
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : progress;
+      break;
+    case 'slide-up':
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : progress;
+      y += exitProgress > 0 ? (-30 * exitProgress) : (30 * (1 - progress));
+      break;
+    case 'slide-left':
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : progress;
+      x += exitProgress > 0 ? (-60 * exitProgress) : (60 * (1 - progress));
+      break;
+    case 'scale': {
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : progress;
+      const scaleFactor = exitProgress > 0
+        ? (1 + exitProgress * 0.5)
+        : (0.3 + 0.7 * progress);
+      fontSize = Math.round(baseFontSize * scaleFactor);
+      break;
+    }
+    case 'bounce': {
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : Math.min(1, progress * 2);
+      const bounce = progress < 1
+        ? Math.abs(Math.sin(progress * Math.PI * 3)) * (1 - progress) * 20
+        : 0;
+      y += -bounce;
+      break;
+    }
+    case 'blur':
+      // FFmpeg drawtext doesn't support blur, approximate with alpha fade
+      alpha *= exitProgress > 0 ? (1 - exitProgress) : progress;
+      break;
+    default:
+      break;
+  }
+
+  return { x: Math.round(x), y: Math.round(y), alpha: Math.max(0, Math.min(1, alpha)), fontSize };
+}
 
 async function applyTextOverlays(videoPath: string, overlays: any[]): Promise<string> {
   const outputPath = getExportPath(`text_overlay_${uuidv4()}.mp4`);
+  const dim = await getVideoDimensions(videoPath);
+  const sx = dim.width / REF_W;
+  const sy = dim.height / REF_H;
 
   return new Promise((resolve, reject) => {
     let cmd = ffmpeg(videoPath);
     const filters: string[] = [];
 
     overlays.forEach((overlay) => {
-      const text = sanitizeText(overlay.content || '');
-      const fontSize = overlay.fontSize || 24;
-      const color = overlay.color || 'white';
+      const rawContent = overlay.content || '';
+      const parts = rawContent.split('|||');
+      const text = sanitizeText(parts[0]);
+      const animation = parts[1] || 'none';
+      const fontSize = Math.round((overlay.fontSize || 24) * sx);
+      const color = cssToFfmpegColor(overlay.color || '#ffffff');
+      const bgColor = cssToFfmpegColor(overlay.bgColor || '#000000');
       const start = overlay.startTime;
       const end = overlay.endTime;
       const duration = end - start;
 
+      // Base drawtext params with background box
+      const boxParams = `box=1:boxcolor=${bgColor}@0.8:boxborderw=6`;
+
       const posKfs = overlay.positionKeyframes || [];
       const opacityKfs = overlay.opacityKeyframes || [];
+      const scaleKfs = overlay.scaleKeyframes || [];
 
-      // For animated overlays: split into sub-segments with interpolated values
-      // Each segment gets a separate drawtext filter with enable timing
-      if (posKfs.length >= 2 || opacityKfs.length >= 2) {
-        const steps = Math.min(Math.ceil(duration * 2), 20); // 2 steps per second, max 20
+      const hasAnimation = animation !== 'none';
+      const hasKeyframeAnimation = posKfs.length >= 2 || opacityKfs.length >= 2 || scaleKfs.length >= 2;
+
+      if (hasAnimation || hasKeyframeAnimation) {
+        const stepsPerSec = hasAnimation ? 10 : 2;
+        const steps = Math.min(Math.ceil(duration * stepsPerSec), 60);
         const stepDuration = duration / steps;
 
         for (let s = 0; s < steps; s++) {
@@ -352,22 +442,40 @@ async function applyTextOverlays(videoPath: string, overlays: any[]): Promise<st
           const absStart = start + t;
           const absEnd = start + tEnd;
 
-          const x = interpolateValue(posKfs, 'x', t, 100);
-          const y = interpolateValue(posKfs, 'y', t, 100);
-          const alpha = interpolateValue(opacityKfs, 'opacity', t, 1);
+          let x = Math.round(interpolateValue(posKfs, 'x', t, 100) * sx);
+          let y = Math.round(interpolateValue(posKfs, 'y', t, 100) * sy);
+          let alpha = interpolateValue(opacityKfs, 'opacity', t, 1);
+          const kfScale = interpolateValue(scaleKfs, 'scale', t, 1);
+          let fs = Math.round(fontSize * kfScale);
+
+          let stepText = text;
+          if (animation === 'typewriter') {
+            const revealDur = Math.min(2, duration);
+            const charCount = Math.min(text.length, Math.floor((t / revealDur) * text.length));
+            stepText = sanitizeText(text.slice(0, Math.max(1, charCount)));
+          }
+
+          if (hasAnimation && animation !== 'typewriter') {
+            const anim = computeTextAnimation(animation, t, duration, x, y, alpha, fs);
+            x = anim.x;
+            y = anim.y;
+            alpha = anim.alpha;
+            fs = anim.fontSize;
+          }
 
           filters.push(
-            `drawtext=text='${text}':x=${Math.round(x)}:y=${Math.round(y)}:fontsize=${fontSize}:fontcolor=${color}:alpha=${alpha.toFixed(2)}:enable='between(t\\,${absStart.toFixed(3)}\\,${absEnd.toFixed(3)})'`
+            `drawtext=text='${animation === 'typewriter' ? stepText : text}':x=${x}-tw/2:y=${y}-th/2:fontsize=${fs}:fontcolor=${color}:alpha=${alpha.toFixed(2)}:${boxParams}:enable='between(t\\,${absStart.toFixed(3)}\\,${absEnd.toFixed(3)})'`
           );
         }
       } else {
-        // Static overlay
-        const x = posKfs[0]?.x ?? 100;
-        const y = posKfs[0]?.y ?? 100;
+        const x = Math.round((posKfs[0]?.x ?? 100) * sx);
+        const y = Math.round((posKfs[0]?.y ?? 100) * sy);
         const alpha = opacityKfs[0]?.opacity ?? 1;
+        const kfScale = scaleKfs[0]?.scale ?? 1;
+        const fs = Math.round(fontSize * kfScale);
 
         filters.push(
-          `drawtext=text='${text}':x=${x}:y=${y}:fontsize=${fontSize}:fontcolor=${color}:alpha=${alpha}:enable='between(t\\,${start}\\,${end})'`
+          `drawtext=text='${text}':x=${x}-tw/2:y=${y}-th/2:fontsize=${fs}:fontcolor=${color}:alpha=${alpha}:${boxParams}:enable='between(t\\,${start}\\,${end})'`
         );
       }
     });
@@ -409,15 +517,33 @@ function interpolateValue(keyframes: any[], prop: string, time: number, defaultV
   return defaultVal;
 }
 
+async function getVideoDimensions(videoPath: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(videoPath, (err, meta) => {
+      if (err) return resolve({ width: 1280, height: 720 });
+      const vs = meta.streams.find(s => s.codec_type === 'video');
+      resolve({ width: vs?.width || 1280, height: vs?.height || 720 });
+    });
+  });
+}
+
+// Reference coordinate system used by the UI
+const REF_W = 1280;
+const REF_H = 720;
+
 // ============================================
 // Image Overlays (Animated with Keyframes)
 // ============================================
 
 async function applyImageOverlays(videoPath: string, overlays: any[]): Promise<string> {
   let currentVideo = videoPath;
+  const dim = await getVideoDimensions(videoPath);
+  const sx = dim.width / REF_W;
+  const sy = dim.height / REF_H;
 
   for (const overlay of overlays) {
-    const imagePath = resolveAssetPath(overlay.content || '');
+    const rawContent = (overlay.content || '').split('|||')[0];
+    const imagePath = resolveAssetPath(rawContent);
     if (!fs.existsSync(imagePath)) continue;
 
     const outputPath = getExportPath(`img_overlay_${uuidv4()}.mp4`);
@@ -425,31 +551,115 @@ async function applyImageOverlays(videoPath: string, overlays: any[]): Promise<s
     const end = overlay.endTime;
 
     const posKfs = overlay.positionKeyframes || [];
+    const scaleKfs = overlay.scaleKeyframes || [];
+    const rotKfs = overlay.rotationKeyframes || [];
+    const opacityKfs = overlay.opacityKeyframes || [];
 
-    // Use first/last keyframe for static position (animated via enable segments)
-    const x = posKfs[0]?.x ?? 100;
-    const y = posKfs[0]?.y ?? 100;
+    const x = Math.round((posKfs[0]?.x ?? 100) * sx);
+    const y = Math.round((posKfs[0]?.y ?? 100) * sy);
+    const scale = scaleKfs[0]?.scale ?? 1;
+    const rotation = rotKfs[0]?.rotation ?? 0;
+    const opacity = opacityKfs[0]?.opacity ?? 1;
 
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(currentVideo)
-        .input(imagePath)
-        .complexFilter([
-          `[1:v]format=rgba[img]`,
-          `[0:v][img]overlay=x=${x}:y=${y}:enable='between(t\\,${start}\\,${end})'[outv]`
-        ], 'outv')
-        .output(outputPath)
-        .videoCodec('libx264')
-        .audioCodec('copy')
-        .outputOptions(['-preset', 'fast'])
-        .on('end', () => resolve())
-        .on('error', reject)
-        .run();
-    });
+    const hasAnimatedKfs = posKfs.length >= 2 || scaleKfs.length >= 2 || rotKfs.length >= 2 || opacityKfs.length >= 2;
+
+    // Base image width in the 1280×720 canvas = 200px, scaled to actual video size.
+    const BASE_IMG_W = Math.round(200 * sx);
+
+    if (hasAnimatedKfs) {
+      const xExpr = buildInterpolationExpr(posKfs, 'x', start, 100, sx);
+      const yExpr = buildInterpolationExpr(posKfs, 'y', start, 100, sy);
+      const midTime = (end - start) / 2;
+      const midScale = interpolateValue(scaleKfs, 'scale', midTime, 1);
+      const midRotation = interpolateValue(rotKfs, 'rotation', midTime, 0);
+      const midOpacity = interpolateValue(opacityKfs, 'opacity', midTime, 1);
+
+      await new Promise<void>((resolve, reject) => {
+        const targetW = Math.round(BASE_IMG_W * midScale);
+        const rotRad = (midRotation * Math.PI / 180).toFixed(4);
+        const rotFilter = midRotation !== 0 ? `,rotate=${rotRad}:fillcolor=none:ow=rotw(${rotRad}):oh=roth(${rotRad})` : '';
+        const alphaF = midOpacity < 1 ? `,colorchannelmixer=aa=${midOpacity.toFixed(2)}` : '';
+        ffmpeg(currentVideo)
+          .input(imagePath)
+          .complexFilter([
+            `[1:v]scale=${targetW}:-1,format=rgba${rotFilter}${alphaF}[img]`,
+            `[0:v][img]overlay=x='(${xExpr})-overlay_w/2':y='(${yExpr})-overlay_h/2':enable='between(t,${start},${end})'[outv]`
+          ], 'outv')
+          .output(outputPath)
+          .videoCodec('libx264')
+          .audioCodec('copy')
+          .outputOptions(['-preset', 'fast'])
+          .on('end', () => resolve())
+          .on('error', reject)
+          .run();
+      });
+    } else {
+      // Static overlay
+      const targetW = Math.round(BASE_IMG_W * scale);
+      const rotRad = (rotation * Math.PI / 180).toFixed(4);
+      const rotFilter = rotation !== 0 ? `,rotate=${rotRad}:fillcolor=none:ow=rotw(${rotRad}):oh=roth(${rotRad})` : '';
+      const alphaFilter = opacity < 1 ? `,colorchannelmixer=aa=${opacity.toFixed(2)}` : '';
+      const ox = `${x}-overlay_w/2`;
+      const oy = `${y}-overlay_h/2`;
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(currentVideo)
+          .input(imagePath)
+          .complexFilter([
+            `[1:v]scale=${targetW}:-1,format=rgba${rotFilter}${alphaFilter}[img]`,
+            `[0:v][img]overlay=x='${ox}':y='${oy}':enable='between(t\\,${start}\\,${end})'[outv]`
+          ], 'outv')
+          .output(outputPath)
+          .videoCodec('libx264')
+          .audioCodec('copy')
+          .outputOptions(['-preset', 'fast'])
+          .on('end', () => resolve())
+          .on('error', reject)
+          .run();
+      });
+    }
 
     currentVideo = outputPath;
   }
 
   return currentVideo;
+}
+
+/**
+ * Build an FFmpeg expression string that linearly interpolates between keyframes.
+ * Uses FFmpeg's `t` variable (current time in seconds) and `if()`/`between()` functions.
+ * `absOffset` is the overlay's startTime so we can use absolute time `t`.
+ */
+function buildInterpolationExpr(keyframes: any[], prop: string, absOffset: number, defaultVal: number, scaleFactor = 1): string {
+  if (keyframes.length === 0) return String((defaultVal * scaleFactor).toFixed(3));
+
+  const sorted = [...keyframes].sort((a: any, b: any) => a.time - b.time);
+
+  if (sorted.length === 1) return String(((sorted[0][prop] ?? defaultVal) * scaleFactor).toFixed(3));
+
+  const lt = `(t-${absOffset.toFixed(3)})`;
+
+  let expr = String(((sorted[sorted.length - 1][prop] ?? defaultVal) * scaleFactor).toFixed(3));
+
+  for (let i = sorted.length - 2; i >= 0; i--) {
+    const t1 = sorted[i].time;
+    const t2 = sorted[i + 1].time;
+    const v1 = (sorted[i][prop] ?? defaultVal) * scaleFactor;
+    const v2 = (sorted[i + 1][prop] ?? defaultVal) * scaleFactor;
+    const dt = t2 - t1;
+
+    if (dt <= 0) continue;
+
+    const lerpExpr = `${v1.toFixed(3)}+${(v2 - v1).toFixed(3)}*(${lt}-${t1.toFixed(3)})/${dt.toFixed(3)}`;
+
+    if (i === 0) {
+      expr = `if(lt(${lt},${t2.toFixed(3)}),if(lt(${lt},${t1.toFixed(3)}),${v1.toFixed(3)},${lerpExpr}),${expr})`;
+    } else {
+      expr = `if(lt(${lt},${t2.toFixed(3)}),${lerpExpr},${expr})`;
+    }
+  }
+
+  return expr;
 }
 
 // ============================================
@@ -462,30 +672,100 @@ async function mixAudioTrack(videoPath: string, audioClips: any[]): Promise<stri
 
   if (!fs.existsSync(audioPath)) return videoPath;
 
+  // Check if base video has an audio stream
+  const hasVideoAudio = await new Promise<boolean>((resolve) => {
+    ffmpeg.ffprobe(videoPath, (err, meta) => {
+      if (err) return resolve(false);
+      resolve(meta.streams.some(s => s.codec_type === 'audio'));
+    });
+  });
+
   return new Promise((resolve, reject) => {
-    ffmpeg(videoPath)
-      .input(audioPath)
-      .complexFilter([
-        '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]'
-      ], undefined)
-      .outputOptions(['-map', '0:v', '-map', '[aout]'])
-      .output(outputPath)
-      .videoCodec('copy')
-      .audioCodec('aac')
-      .on('end', () => resolve(outputPath))
-      .on('error', (err) => {
-        // Fallback: if mixing fails, keep original audio
-        console.error('[Render] Audio mix failed:', err.message);
-        fs.copyFileSync(videoPath, outputPath);
-        resolve(outputPath);
-      })
-      .run();
+    if (hasVideoAudio) {
+      // Mix both audio streams
+      ffmpeg(videoPath)
+        .input(audioPath)
+        .complexFilter([
+          '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]'
+        ], undefined)
+        .outputOptions(['-map', '0:v', '-map', '[aout]'])
+        .output(outputPath)
+        .videoCodec('copy')
+        .audioCodec('aac')
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => {
+          console.error('[Render] Audio mix failed:', err.message);
+          fs.copyFileSync(videoPath, outputPath);
+          resolve(outputPath);
+        })
+        .run();
+    } else {
+      // No audio in video — just add the audio track directly
+      ffmpeg(videoPath)
+        .input(audioPath)
+        .outputOptions(['-map', '0:v', '-map', '1:a', '-shortest'])
+        .output(outputPath)
+        .videoCodec('copy')
+        .audioCodec('aac')
+        .on('end', () => resolve(outputPath))
+        .on('error', (err) => {
+          console.error('[Render] Audio add failed:', err.message);
+          fs.copyFileSync(videoPath, outputPath);
+          resolve(outputPath);
+        })
+        .run();
+    }
   });
 }
 
 // ============================================
 // Utilities
 // ============================================
+
+async function getVideoDuration(videoPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(videoPath, (err, meta) => {
+      if (err) return resolve(0);
+      resolve(meta.format.duration || 0);
+    });
+  });
+}
+
+async function padVideoToLength(videoPath: string, targetDuration: number, tempFiles: string[]): Promise<string> {
+  const outputPath = getExportPath(`padded_${uuidv4()}.mp4`);
+
+  // Use tpad filter to extend video with black frames — handles format matching automatically
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, meta) => {
+      if (err) return reject(err);
+      const currentDuration = meta.format.duration || 0;
+      const padDuration = targetDuration - currentDuration;
+      if (padDuration <= 0) return resolve(videoPath);
+
+      const hasAudio = meta.streams.some(s => s.codec_type === 'audio');
+
+      const cmd = ffmpeg(videoPath)
+        .videoFilters(`tpad=stop_mode=clone:stop_duration=${padDuration.toFixed(3)}`);
+
+      if (hasAudio) {
+        cmd.audioFilters(`apad=pad_dur=${padDuration.toFixed(3)}`);
+      }
+
+      cmd
+        .output(outputPath)
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .outputOptions(['-preset', 'fast'])
+        .on('end', () => resolve(outputPath))
+        .on('error', (padErr) => {
+          // Fallback: just use original if padding fails
+          console.error('[Render] Padding failed:', padErr.message);
+          resolve(videoPath);
+        })
+        .run();
+    });
+  });
+}
 
 async function concatenateFiles(files: string[], outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {

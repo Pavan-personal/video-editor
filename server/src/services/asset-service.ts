@@ -65,15 +65,53 @@ export async function generateThumbnail(
   });
 }
 
+export async function extractAudioFromVideo(videoPath: string, outputPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .noVideo()
+      .audioCodec('libmp3lame')
+      .audioBitrate(192)
+      .output(outputPath)
+      .on('end', () => {
+        // Get duration of extracted audio
+        ffmpeg.ffprobe(outputPath, (err, meta) => {
+          if (err) return resolve(0);
+          resolve(meta.format.duration || 0);
+        });
+      })
+      .on('error', reject)
+      .run();
+  });
+}
+
 export async function createAsset(
   projectId: string,
   file: Express.Multer.File,
-  type: 'video' | 'audio' | 'image'
+  type: 'video' | 'audio' | 'image',
+  extractAudio = false,
 ) {
   const filepath = file.path;
   
   let metadata: Partial<VideoMetadata> = {};
   let thumbnailPath: string | null = null;
+
+  // If extractAudio is requested and file is a video, extract audio track
+  if (extractAudio && type === 'audio') {
+    const audioFilename = `${uuidv4()}.mp3`;
+    const audioPath = path.join(path.dirname(filepath), audioFilename);
+    const duration = await extractAudioFromVideo(filepath, audioPath);
+
+    return prisma.asset.create({
+      data: {
+        projectId,
+        type: 'audio',
+        filename: file.originalname.replace(/\.[^.]+$/, '.mp3'),
+        filepath: audioPath,
+        duration,
+        hasAudio: true,
+      },
+    });
+  }
 
   if (type === 'video') {
     metadata = await extractVideoMetadata(filepath);

@@ -1,420 +1,178 @@
-# Video Editor
+# Web Video Editor
 
-A web-based video editor with multi-track timeline, speed ramping, motion graphics overlays, and server-side FFmpeg rendering.
+A browser-based video editor with timeline editing, speed ramping, motion graphics overlays, and server-side FFmpeg export.
+
+## Quick Start
+
+```bash
+docker-compose up --build
+```
+
+- UI: http://localhost:3000
+- API: http://localhost:3001
+
+Seed demo data (after containers are running):
+
+```bash
+docker-compose exec server npx tsx src/seed.ts
+```
+
+Place `sample.mp4` in the repo root before seeding, or drop videos into `server/uploads/`.
 
 ## Architecture
 
 ```
-┌─────────────┐
-│   Frontend  │  React + TypeScript + Canvas
-│   (Port     │  Timeline UI + Video Preview
-│    3000)    │
-└──────┬──────┘
-       │ REST API
-       ▼
-┌─────────────┐
-│   Backend   │  Node.js + Express + TypeScript
-│   (Port     │  Prisma ORM + PostgreSQL
-│    3001)    │
-└──────┬──────┘
-       │
-       ├─────► PostgreSQL (Projects, Assets, Timeline, Exports)
-       │
-       ├─────► Redis + BullMQ (Async Job Queue)
-       │
-       └─────► FFmpeg Worker (Video Rendering)
-                  │
-                  ▼
-              ┌──────────┐
-              │  Worker  │  Background render process
-              └──────────┘
+┌─────────────┐     ┌──────────────────────────────────────────┐
+│   Browser    │     │           Docker Compose                 │
+│              │     │                                          │
+│  React 19   │────▶│  Express API (:3001)                     │
+│  Vite 7     │     │    ├─ Routes (projects/assets/clips/...) │
+│  Tailwind   │     │    ├─ Prisma ORM ──▶ PostgreSQL (:5432)  │
+│  Timeline   │     │    └─ BullMQ ──────▶ Redis (:6379)       │
+│  Preview    │     │                                          │
+│             │◀────│  Render Worker                            │
+│             │     │    └─ FFmpeg pipeline                     │
+└─────────────┘     └──────────────────────────────────────────┘
 ```
 
-## Setup Instructions
+### Stack
 
-### Prerequisites
+| Layer    | Tech                                      |
+|----------|-------------------------------------------|
+| Frontend | React 19, TypeScript, Vite 7, Tailwind CSS, lucide-react |
+| Backend  | Node.js, Express, TypeScript              |
+| Database | PostgreSQL 16 + Prisma ORM                |
+| Queue    | Redis 7 + BullMQ                          |
+| Render   | FFmpeg (fluent-ffmpeg)                    |
+| Infra    | Docker Compose                            |
 
-- Docker & Docker Compose
-- Node.js 20+ (for local development / tests)
-- 3+ sample video files (MP4 format) for demo
+## Time Engine
 
-### Quick Start
+The core of the editor is a deterministic timeline evaluation engine (`server/src/utils/time-engine.ts`).
 
-```bash
-# 1. Clone repo
-git clone <repo-url>
-cd video-editor
+### Mapping: `timeline_time → clip_local_time → source_time`
 
-# 2. Create env file
-cp server/.env.example server/.env
-
-# 3. Start everything
-docker-compose up --build
-
-# This starts:
-#   - PostgreSQL (port 5432)
-#   - Redis (port 6379)
-#   - Backend API (port 3001)
-#   - Worker process
-#   - Frontend UI (port 3000)
-```
-
-### Verify
-
-```bash
-# Backend
-curl http://localhost:3001/health
-# {"status":"ok"}
-
-# Frontend
-open http://localhost:3000
-```
-
-### Run Tests
-
-```bash
-# Unit tests
-cd server
-npm install
-npm test
-
-# Full backend integration test (requires Docker running)
-# Tests all APIs, upload, export pipeline, error handling
-chmod +x scripts/test-backend.sh
-./scripts/test-backend.sh
-```
-
-### Stop
-
-```bash
-docker-compose down        # Stop services
-docker-compose down -v     # Stop + delete data
-```
-
----
-
-## Backend
-
-### Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Runtime | Node.js 20 + TypeScript |
-| Framework | Express |
-| ORM | Prisma |
-| Database | PostgreSQL 16 |
-| Job Queue | BullMQ + Redis 7 |
-| Video Processing | FFmpeg (fluent-ffmpeg) |
-| File Upload | Multer |
-| Containerization | Docker + Docker Compose |
-
-### API Endpoints
-
-#### Projects
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/projects` | Create project |
-| GET | `/api/projects` | List all projects |
-| GET | `/api/projects/:id` | Get project with timeline data |
-| PATCH | `/api/projects/:id` | Update project |
-| DELETE | `/api/projects/:id` | Delete project (cascades) |
-
-#### Assets
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/assets` | Upload asset (multipart/form-data) |
-| GET | `/api/assets/project/:id` | List assets for project |
-
-On video upload, the server extracts: duration, fps, resolution, codec, hasAudio, and generates a thumbnail.
-
-#### Clips
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/clips` | Add clip to timeline |
-| PATCH | `/api/clips/:id` | Update clip (trim, speed keyframes) |
-| DELETE | `/api/clips/:id` | Remove clip |
-
-#### Overlays
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/overlays` | Add text/image overlay |
-| PATCH | `/api/overlays/:id` | Update overlay (keyframes) |
-| DELETE | `/api/overlays/:id` | Remove overlay |
-
-#### Exports
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/exports` | Start export job (idempotent) |
-| GET | `/api/exports/:id` | Get export status + progress |
-| GET | `/api/exports/:id/download` | Download rendered MP4 |
-
-### Database Schema
-
-5 models in PostgreSQL via Prisma:
-
-- **Project** — Container for all timeline data
-- **Asset** — Imported video/audio/image with extracted metadata
-- **Clip** — Video clip on timeline with track, trim, and speed keyframes (JSON)
-- **Overlay** — Text/image overlay with position, scale, rotation, opacity keyframes (JSON)
-- **Export** — Render job with status tracking (QUEUED → RUNNING → COMPLETE/FAILED)
-
-All relations use cascade delete. Indexes on projectId, assetId, and export status.
-
-### Time Engine
-
-The core of the editor is the Time Engine (`server/src/utils/time-engine.ts`).
-
-#### Deterministic Mapping
+1. A clip sits on the timeline at `[startTime, endTime]`
+2. `clipLocalTime = timelineTime - clip.startTime`
+3. Speed keyframes define a piecewise-linear speed curve over clip-local time
+4. Source time is computed via **trapezoidal integration** of the speed curve:
 
 ```
-timeline_time → clip_local_time → source_time
+For keyframes [kf_i, kf_{i+1}]:
+  speed(t) = lerp(kf_i.speed, kf_{i+1}.speed, progress)
+  sourceTime += (t - kf_i.time) × avgSpeed   // trapezoidal rule
 ```
 
-1. **Timeline time**: Absolute position on the timeline (seconds)
-2. **Clip local time**: `timeline_time - clip.startTime`
-3. **Source time**: `clip.trimStart + evaluateSpeedRamp(clipLocalTime, keyframes)`
+### Speed Ramps
 
-#### Speed Ramp Evaluation
+- Range: 0x (freeze/hold) to 8x
+- Keyframes are sorted by time; speed is linearly interpolated between them
+- **Holds** (0x speed): freeze frame — duplicates a single frame for the hold duration
+- **Ramps**: smooth acceleration/deceleration between keyframe speeds
+- No drift: accumulated source time is computed from segment integrals, not incremental addition
 
-```typescript
-evaluateSpeedRamp(clipLocalTime: number, keyframes: SpeedKeyframe[]): number
-```
+### Overlay Transforms
 
-- Keyframes define speed at specific times: `[{time: 0, speed: 1}, {time: 2, speed: 2}]`
-- Speed range: 0x (hold/freeze) to 8x
-- Linear interpolation between keyframes
-- Trapezoidal integration for accurate source time calculation
-- No drift — accumulated source time is computed from keyframe 0
+Position, scale, rotation, and opacity are each keyframed independently with linear interpolation.
 
-#### Hold (Freeze Frame)
+## Export Pipeline
 
-When `speed: 0`, the source time stops advancing. The renderer extracts a single frame and loops it for the hold duration.
+Server-side FFmpeg render triggered via REST API. Runs as an async BullMQ job.
 
-#### Transform Interpolation
+### Steps
 
-```typescript
-interpolateKeyframes(time: number, keyframes: TransformKeyframe[], property: string): number
-```
+1. **Render Track A clips** — each clip rendered with speed ramps via segment-based approach
+2. **Composite Track B** — overlay Track B on Track A using FFmpeg `overlay` filter
+3. **Apply text overlays** — `drawtext` filter with animated position/opacity (sub-segmented for keyframe interpolation)
+4. **Apply image overlays** — `overlay` filter with enable timing
+5. **Mix audio** — `amix` filter to blend video audio with audio track
+6. **Output** — final MP4 with h264/aac
 
-Linear interpolation for overlay properties: position (x,y), scale, rotation, opacity.
+### Speed Ramp Rendering
 
-#### Timeline Evaluation
+For clips with multiple speed keyframes:
+- Split into segments between consecutive keyframes
+- Each segment rendered at the keyframe's speed using `setpts` and `atempo` filters
+- Segments concatenated with `concat` demuxer
+- Holds rendered by extracting a single frame and looping it
 
-```typescript
-evaluateTimeline(time: number, clips: ClipData[], overlays: OverlayData[]): TimelineState
-```
+### Job States
 
-At any time T, returns:
-- Active video clips on tracks A/B with computed source times
-- Active overlays with interpolated transforms
+`QUEUED → RUNNING → COMPLETE | FAILED`
 
-### Export Pipeline
+- Progress updates at each pipeline stage (5% → 95%)
+- Idempotent: same export ID won't spawn duplicate jobs
+- Polling from UI every 1s
 
-#### Strategy: Segment-Based Rendering
+### Preview vs Export Gap
 
-Due to FFmpeg limitations with dynamic speed curves:
+The browser preview uses HTML5 `<video>` with JavaScript-driven seeking for speed ramps. This is approximate — the video element's native playback rate isn't changed per-keyframe. The export uses FFmpeg and is frame-accurate. Text overlay animations match closely between preview (CSS) and export (drawtext with sub-segments).
 
-1. **Split** clip at speed keyframes into segments
-2. **Render** each segment with constant speed (`setpts` + `atempo` filters)
-3. **Concatenate** segments using FFmpeg concat demuxer
-4. **Composite** text overlays using `drawtext` filter
-5. **Output** final MP4 (H.264 + AAC)
+## Data Model
 
 ```
-Source Video
-    ↓
-[Trim + Speed Filter] → Segment 1 (1x)
-[Trim + Speed Filter] → Segment 2 (2x)
-[Trim + Speed Filter] → Segment 3 (0.5x)
-    ↓
-[Concat] → Combined Video
-    ↓
-[Drawtext Filter] → Final MP4
+Project
+  ├── Asset[]        (video/audio/image files with extracted metadata)
+  ├── Clip[]         (timeline placement + speed keyframes as JSON)
+  ├── Overlay[]      (text/image + transform keyframes as JSON)
+  └── Export[]       (job status + output path)
 ```
 
-#### Hold Rendering
+All keyframes stored as JSON columns in PostgreSQL via Prisma.
 
-For 0x speed segments: extract single frame as PNG, then loop it with `-loop 1 -t <duration>`.
-
-#### Async Job Queue
-
-- BullMQ + Redis for job management
-- Worker process runs separately from API server
-- Job states: QUEUED → RUNNING → COMPLETE/FAILED
-- Progress polling via `GET /api/exports/:id`
-- Idempotent: duplicate export requests return existing job
-
-#### Limitations
-
-- Speed changes are per-segment (not frame-perfect curves)
-- Audio tempo adjustment limited to 0.5x–2.0x range (chained for wider)
-- Text overlays use first keyframe position in export (animated keyframes simplified)
-- Track B compositing not yet implemented in export
-- Preview and export may differ slightly
-
-### Security
-
-- File upload validation: type whitelist (mp4, mov, avi, mkv, mp3, wav, png, jpg)
-- File size limit: 500MB
-- No arbitrary FFmpeg argument injection (all commands built programmatically)
-- Cascade deletes prevent orphaned data
-- Graceful error handling for corrupt/unsupported uploads
-
-### Tests
-
-```bash
-cd server && npm test
-```
-
-| Test | Description |
-|------|-------------|
-| Speed ramp with acceleration | Verifies 1x→2x ramp produces correct source times |
-| Hold (0x speed) | Verifies freeze frame stops source time advancement |
-| No keyframes | Verifies 1:1 time mapping |
-| Single keyframe | Verifies constant speed multiplication |
-
-Additional tests via `test-backend.sh`:
-- Export idempotency (same request = same job)
-- Project save/load integrity (all data persists and reloads)
-- Error handling (400/404 responses)
-
----
-
-## Frontend
-
-### Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Framework | React 19 + TypeScript |
-| Build Tool | Vite 7 |
-| State Management | React Hooks + TanStack Query |
-| HTTP Client | Axios |
-| Canvas Rendering | HTML5 Canvas API |
-| Testing | Vitest + Testing Library |
-
-### Features
-
-#### Multi-Track Timeline
-- 5 tracks: video_a, video_b, overlay_1, overlay_2, audio
-- Canvas-based rendering with 50px per second scale
-- Visual representation of clips and overlays
-- Click to move playhead
-- Shift+click to delete clips
-
-#### Video Preview
-- Canvas-based preview at 1280x720
-- Real-time overlay rendering with transforms
-- Speed ramp evaluation for accurate playback
-- Interpolated keyframe animations
-
-#### Asset Management
-- Drag-drop file upload
-- Thumbnail previews
-- Metadata display (duration, resolution)
-- One-click add to timeline
-
-#### Clip Editing
-- Add clips to timeline from asset panel
-- Click clip to add speed keyframes
-- Speed range: 0x (hold) to 8x
-- Visual speed indicator (⚡) for ramped clips
-
-#### Text Overlays
-- Add text at current playhead position
-- Configurable font size, color, background
-- Keyframed transforms: position, scale, rotation, opacity
-- Real-time preview rendering
-
-#### Export
-- One-click export with progress polling
-- Status updates every second
-- Download link on completion
-- Error handling with messages
-
-### Project Structure
+## Project Structure
 
 ```
+server/
+  src/
+    config/          # DB, Redis, storage config
+    routes/          # REST endpoints (projects, assets, clips, overlays, exports, timeline)
+    services/        # Business logic (asset-service, render-service, export-service)
+    utils/           # Time engine
+    workers/         # BullMQ render worker
+  prisma/            # Schema + migrations
+  tests/             # Jest tests
+
 ui/
-├── src/
-│   ├── api/
-│   │   └── client.ts          # API client + types
-│   ├── components/
-│   │   ├── AssetPanel.tsx     # Asset upload + list
-│   │   ├── Preview.tsx        # Canvas video preview
-│   │   ├── Timeline.tsx       # Multi-track timeline
-│   │   └── __tests__/
-│   │       └── Timeline.test.tsx
-│   ├── App.tsx                # Main editor component
-│   ├── App.css                # Styles
-│   └── main.tsx               # Entry point
-├── Dockerfile
-├── vite.config.ts             # Vite config with proxy
-├── vitest.config.ts           # Test config
-└── package.json
+  src/
+    api/             # Axios API client
+    components/      # Timeline, Preview, AssetPanel, Modal, Toast
+    App.tsx          # Main editor with all state management
 ```
 
-### API Integration
-
-All API calls go through `src/api/client.ts`:
-- Projects: create, list, get, delete
-- Assets: upload (multipart), list
-- Clips: create, update, delete
-- Overlays: create, update, delete
-- Exports: create, poll status, download
-
-Vite dev server proxies `/api` requests to `http://localhost:3001`.
-
-### Tests
+## Tests
 
 ```bash
-cd ui && npm test
+# Backend (9 tests)
+cd server && npx jest
+
+# Frontend (3 tests)
+cd ui && npx vitest --run
 ```
 
-3 tests covering:
-- Timeline canvas rendering
-- Current time display
-- Clip rendering on tracks
+### Test Coverage
 
-### Limitations
+- **Time engine**: speed ramp evaluation, hold (0x) behavior
+- **Backend**: export idempotency, project save/load integrity
+- **Frontend**: track rendering, clip display, overlay text stripping
 
-- Preview uses simplified rendering (no actual video playback)
-- Speed ramp evaluation is approximate (matches backend logic)
-- No drag-to-trim or drag-to-move clips
-- No keyframe editor UI (uses prompts)
-- No undo/redo
-- No zoom controls on timeline
-- Text overlays use first keyframe in preview (full animation in export)
+## Environment Variables
 
-### Usage Guide
+See `server/.env.example`:
 
-1. **Create a Project**: Click "New Project" and enter a name
-2. **Upload Assets**: Use the file input in the left panel to upload video files
-3. **Add Clips**: Click "Add to Timeline" on any asset to place it on video_a track
-4. **Add Speed Keyframes**: Click on a clip in the timeline, enter a speed value (0-8)
-5. **Add Text Overlay**: Click "Add Text" button, enter text content
-6. **Scrub Timeline**: Click anywhere on the timeline to move the playhead
-7. **Export**: Click "Export" to render the final video
-8. **Download**: When export completes, use the download link
-
----
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/video_editor
+REDIS_HOST=localhost
+REDIS_PORT=6379
+PORT=3001
+```
 
 ## AI Usage
 
-### Tools Used
-- **Kiro AI** — Project scaffolding, architecture, code generation, debugging
-- **AI-assisted coding** — Used throughout for boilerplate, FFmpeg commands, and test writing
+This project was built with AI assistance (Kiro / Claude). Specifically:
 
-### Manual Verification
-- Time engine math verified with unit tests
-- FFmpeg pipeline tested with real video files
-- API contracts tested with curl scripts
-- Database migrations reviewed
-- Docker configuration tested locally
-- Export output visually verified
-
----
-
-## License
-
-MIT
+- **Architecture design**: AI helped design the time engine, segment-based render pipeline, and data model
+- **Code generation**: All source files were generated with AI, then reviewed and iterated on based on testing
+- **Bug fixes**: Audio playback flickering, overlay text display bugs, timeline collision detection — all identified and fixed through AI-assisted debugging
+- **Manual verification**: Docker builds, FFmpeg output, browser preview behavior, and all test results were verified by running the actual application
+- **What AI didn't do**: Visual design decisions (KineMaster-inspired look) and feature prioritization were human-directed
